@@ -1,20 +1,36 @@
+# =======================================================
+# FILE: app/logic/tasks.py
+# =======================================================
 import os
 import json
 import tempfile
-import redis
+import sqlite3
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 from zipfile import ZipFile, is_zipfile
+from selectolax.parser import HTMLParser # Using the new, faster parser
 
 # Import the actual parsing functions and the app config
 from ..parsers.main_parser import process_single_file, deduplicate_and_sort_messages
-from ..config import settings
 
-# --- MODIFIED: Use Redis instead of an in-memory dictionary ---
-# This client will connect to the Redis instance specified in the config.
-redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+DB_FILE = "tasks.db"
 
-# Pydantic model for response validation
+def setup_database():
+    """Creates the tasks table if it doesn't exist."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    # Store task data as JSON text. Set a timestamp for automatic cleanup.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tasks (
+            task_id TEXT PRIMARY KEY,
+            task_data TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+# Pydantic model for response validation (remains the same)
 class TaskStatusModel(BaseModel):
     task_id: str
     status: str
@@ -22,26 +38,42 @@ class TaskStatusModel(BaseModel):
     stage: str
     result: Any = None
 
+# --- MODIFIED: Functions now use SQLite ---
+
 def get_task(task_id: str) -> Optional[dict]:
-    """Retrieves a task from Redis."""
-    task_json = redis_client.get(f"task:{task_id}")
-    return json.loads(task_json) if task_json else None
+    """Retrieves a task from the SQLite database."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT task_data FROM tasks WHERE task_id = ?", (task_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return json.loads(row[0]) if row else None
 
 def set_task(task_id: str, task_data: dict):
-    """Saves a task to Redis with a 24-hour expiration."""
-    redis_client.set(f"task:{task_id}", json.dumps(task_data), ex=86400) # 24 hours
+    """Saves or updates a task in the SQLite database."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    # INSERT OR REPLACE is a convenient way to handle both new and existing tasks
+    cursor.execute(
+        "INSERT OR REPLACE INTO tasks (task_id, task_data) VALUES (?, ?)",
+        (task_id, json.dumps(task_data))
+    )
+    conn.commit()
+    conn.close()
 
 def update_task_progress(task_id: str, progress: float, stage: str):
-    """Updates the progress of a task in Redis."""
+    """Updates the progress of a task in SQLite."""
     task = get_task(task_id)
     if task:
         task.update({
-            'progress': progress,
-            'status': 'running',
-            'stage': stage
+            'progress': progress, 'status': 'running', 'stage': stage
         })
         set_task(task_id, task)
 
+# Initialize the database when the module is loaded
+setup_database()
+
+# The main parsing job remains the same, as it calls the functions above
 def run_parsing_job(file_content: bytes, filename: str, task_id: str):
     """The actual parsing function that runs in the background."""
     try:
@@ -67,19 +99,15 @@ def run_parsing_job(file_content: bytes, filename: str, task_id: str):
                        and os.path.basename(m) and not os.path.basename(m).startswith('.')
                        and m.lower().endswith(valid_extensions)
                 ]
-
                 print(f"Task {task_id}: Found {len(namelist)} valid files in ZIP.")
-
                 if not namelist:
                     raise ValueError("No valid content files (.json, .html) found in the ZIP archive.")
 
                 for i, member_name in enumerate(namelist):
                     zip_progress = 15 + ((i + 1) / len(namelist)) * 60
                     update_task_progress(task_id, zip_progress, f"Parsing file {i+1}/{len(namelist)}: {member_name}")
-
                     with archive.open(member_name) as file_obj:
                         if file_obj.peek(1):
-                            setattr(file_obj, 'filename', member_name)
                             new_messages = process_single_file(file_obj, seen_hashes)
                             all_unique_messages.extend(new_messages)
                         else:
@@ -88,7 +116,6 @@ def run_parsing_job(file_content: bytes, filename: str, task_id: str):
             print(f"Task {task_id}: Detected single file.")
             update_task_progress(task_id, 40.0, "Parsing single file")
             with open(temp_file_path, 'rb') as f:
-                setattr(f, 'filename', filename)
                 new_messages = process_single_file(f, seen_hashes)
                 all_unique_messages.extend(new_messages)
 
