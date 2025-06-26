@@ -5,10 +5,11 @@ import os
 import json
 import tempfile
 import sqlite3
+import multiprocessing # <-- ADDED: The library to run tasks in a separate process
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 from zipfile import ZipFile, is_zipfile
-from selectolax.parser import HTMLParser # Using the new, faster parser
+from selectolax.parser import HTMLParser
 
 # Import the actual parsing functions and the app config
 from ..parsers.main_parser import process_single_file, deduplicate_and_sort_messages
@@ -17,9 +18,8 @@ DB_FILE = "tasks.db"
 
 def setup_database():
     """Creates the tasks table if it doesn't exist."""
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False) # Allow connections from multiple processes
     cursor = conn.cursor()
-    # Store task data as JSON text. Set a timestamp for automatic cleanup.
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS tasks (
             task_id TEXT PRIMARY KEY,
@@ -30,7 +30,6 @@ def setup_database():
     conn.commit()
     conn.close()
 
-# Pydantic model for response validation (remains the same)
 class TaskStatusModel(BaseModel):
     task_id: str
     status: str
@@ -38,11 +37,9 @@ class TaskStatusModel(BaseModel):
     stage: str
     result: Any = None
 
-# --- MODIFIED: Functions now use SQLite ---
-
 def get_task(task_id: str) -> Optional[dict]:
     """Retrieves a task from the SQLite database."""
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT task_data FROM tasks WHERE task_id = ?", (task_id,))
     row = cursor.fetchone()
@@ -51,9 +48,8 @@ def get_task(task_id: str) -> Optional[dict]:
 
 def set_task(task_id: str, task_data: dict):
     """Saves or updates a task in the SQLite database."""
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cursor = conn.cursor()
-    # INSERT OR REPLACE is a convenient way to handle both new and existing tasks
     cursor.execute(
         "INSERT OR REPLACE INTO tasks (task_id, task_data) VALUES (?, ?)",
         (task_id, json.dumps(task_data))
@@ -73,11 +69,14 @@ def update_task_progress(task_id: str, progress: float, stage: str):
 # Initialize the database when the module is loaded
 setup_database()
 
-# The main parsing job remains the same, as it calls the functions above
-def run_parsing_job(file_content: bytes, filename: str, task_id: str):
-    """The actual parsing function that runs in the background."""
+
+# --- NEW: This function contains the actual heavy work and is run in a separate process. ---
+def _execute_parsing_in_new_process(file_content: bytes, filename: str, task_id: str):
+    """
+    This function runs in complete isolation to avoid blocking the web server.
+    """
     try:
-        print(f"Task {task_id}: Starting parsing for '{filename}'")
+        print(f"[{os.getpid()}] New process started for Task {task_id}: Parsing '{filename}'")
         update_task_progress(task_id, 10.0, "Initializing")
 
         with tempfile.NamedTemporaryFile(delete=False) as temp_file:
@@ -110,8 +109,6 @@ def run_parsing_job(file_content: bytes, filename: str, task_id: str):
                         if file_obj.peek(1):
                             new_messages = process_single_file(file_obj, seen_hashes)
                             all_unique_messages.extend(new_messages)
-                        else:
-                            print(f"Task {task_id}: Skipping empty file {member_name}")
         else:
             print(f"Task {task_id}: Detected single file.")
             update_task_progress(task_id, 40.0, "Parsing single file")
@@ -141,3 +138,19 @@ def run_parsing_job(file_content: bytes, filename: str, task_id: str):
             "result": {"error": str(e)}
         })
         set_task(task_id, task)
+
+# --- MODIFIED: This function now just starts the new process. ---
+def run_parsing_job(file_content: bytes, filename: str, task_id: str):
+    """
+    This function is called by the API endpoint.
+    It's a lightweight function that spawns the actual work in a separate process.
+    """
+    print(f"Spawning a new process for task {task_id}...")
+    process = multiprocessing.Process(
+        target=_execute_parsing_in_new_process,
+        args=(file_content, filename, task_id),
+        daemon=True # Ensures the process exits if the main app does
+    )
+    process.start()
+    print(f"Process for task {task_id} started with PID: {process.pid}")
+
