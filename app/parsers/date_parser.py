@@ -2,7 +2,6 @@ import re
 from datetime import datetime
 
 def clean_timestamp(ts):
-    """Clean timestamp by removing read receipts and other extra info"""
     if not ts:
         return ts
     ts = re.sub(r'\s*\([^)]*\)\s*$', '', ts)
@@ -14,7 +13,6 @@ def clean_timestamp(ts):
     return ts
 
 def parse_khmer_date(ts):
-    """Parse Khmer date format"""
     if not ts:
         return None
 
@@ -51,7 +49,6 @@ def parse_khmer_date(ts):
         return None
 
 def parse_datetime_comprehensive(ts):
-    """Comprehensive datetime parser with multiple format support"""
     if not ts:
         return None
 
