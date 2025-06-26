@@ -1,7 +1,7 @@
 import hashlib
 import json
 from datetime import datetime
-from bs4 import BeautifulSoup
+from selectolax.parser import HTMLParser
 from .config import Config
 from .date_parser import parse_datetime_comprehensive
 from .html_parser import (
@@ -26,19 +26,59 @@ def process_single_file(file_obj, seen_hashes: set):
     unique_msgs_from_this_file = []
     filename = getattr(file_obj, 'filename', 'unknown_file')
 
-
     if filename.lower().endswith('.json'):
         content = file_obj.read().decode('utf-8', errors='ignore')
         extracted_messages = parse_generic_json(json.loads(content))
-    else: # Handle .html and .htm
-        soup = BeautifulSoup(file_obj, 'lxml')
+    else:  # Handle .html and .htm
+        content = file_obj.read()
+
+        # Decode content if it's bytes
+        if isinstance(content, bytes):
+            content = content.decode('utf-8', errors='ignore')
+
+        # Parse with selectolax
+        tree = HTMLParser(content)
+
         extracted_messages = []
-        extracted_messages.extend(extract_json_from_html(soup))
-        extracted_messages.extend(extract_telegram(soup))
-        extracted_messages.extend(extract_facebook(soup))
-        extracted_messages.extend(extract_instagram(soup))
-        extracted_messages.extend(extract_imessage(soup))
-        extracted_messages.extend(extract_discord_html(soup))
+
+        # Early detection of platform to skip unnecessary extractors
+        content_lower = content[:1000].lower()  # Check first 1KB
+
+        platform_detected = False
+
+        if 'telegram' in content_lower or 'class="message"' in content_lower:
+            extracted_messages.extend(extract_telegram(tree))
+            platform_detected = True
+
+        if 'facebook' in content_lower or '_3-95' in content_lower:
+            extracted_messages.extend(extract_facebook(tree))
+            platform_detected = True
+
+        if 'instagram' in content_lower or '_4tsk' in content_lower:
+            extracted_messages.extend(extract_instagram(tree))
+            platform_detected = True
+
+        if 'imessage' in content_lower or 'class="received"' in content_lower:
+            extracted_messages.extend(extract_imessage(tree))
+            platform_detected = True
+
+        if 'discord' in content_lower or 'chat-msg' in content_lower:
+            extracted_messages.extend(extract_discord_html(tree))
+            platform_detected = True
+
+        # Always check for JSON in script tags
+        json_messages = extract_json_from_html(tree)
+        if json_messages:
+            extracted_messages.extend(json_messages)
+            platform_detected = True
+
+        # If no platform-specific messages found, try all extractors
+        if not platform_detected or not extracted_messages:
+            extracted_messages.extend(extract_telegram(tree))
+            extracted_messages.extend(extract_facebook(tree))
+            extracted_messages.extend(extract_instagram(tree))
+            extracted_messages.extend(extract_imessage(tree))
+            extracted_messages.extend(extract_discord_html(tree))
 
     # --- Perform on-the-fly deduplication ---
     for msg in extracted_messages:
