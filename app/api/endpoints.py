@@ -3,7 +3,11 @@
 import uuid
 import threading
 from flask import Blueprint, request, jsonify, current_app
-from ..logic.tasks import run_parsing_job, set_task, get_task, TaskStatusModel
+
+# The line below has been corrected. It now uses '..' to correctly
+# navigate up one directory level from 'api/' to 'app/' before
+# looking for the 'logic/' directory.
+from ..logic.tasks import run_parsing_job, set_task, get_task
 
 # In Flask, we use a 'Blueprint' instead of an 'APIRouter'.
 # The first argument, 'api', is the name of the blueprint.
@@ -11,11 +15,13 @@ from ..logic.tasks import run_parsing_job, set_task, get_task, TaskStatusModel
 # The url_prefix will make all routes in this file start with '/api'.
 api_blueprint = Blueprint('api', __name__, url_prefix='/api')
 
+
 def start_background_task(app, file_content, filename, task_id):
     """
     Helper function to run the parsing job in a background thread.
     This is the Flask equivalent of FastAPI's BackgroundTasks.
     """
+
     def run_job():
         # The background thread needs the application context to work correctly
         with app.app_context():
@@ -25,12 +31,13 @@ def start_background_task(app, file_content, filename, task_id):
     thread.daemon = True
     thread.start()
 
+
 @api_blueprint.route("/parse", methods=['POST'])
 def create_parsing_task():
     """ The /parse endpoint, rewritten for Flask. """
     if 'file' not in request.files:
         return jsonify({"error": "No file part"}), 400
-    
+
     file = request.files['file']
 
     if file.filename == '':
@@ -52,6 +59,7 @@ def create_parsing_task():
 
         response_data = {"task_id": task_id, "status": "pending", "message": "Parsing task has been queued."}
         return jsonify(response_data), 202
+
 
 @api_blueprint.route("/status/<task_id>", methods=['GET'])
 def get_task_status(task_id: str):
