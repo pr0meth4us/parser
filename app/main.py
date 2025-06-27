@@ -14,7 +14,7 @@ CORS(app, origins=settings.ALLOWED_ORIGINS, supports_credentials=True)
 
 # --- Register the API routes ---
 # This line tells our main app about all the routes in the endpoints.py file.
-app.register_blueprint(api_blueprint)
+app.register_blueprint(api_blueprint, url_prefix='/api')
 
 @app.route("/")
 def read_root():
