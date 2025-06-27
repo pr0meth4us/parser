@@ -1,40 +1,19 @@
-# This is your new app/api/endpoints.py file, rewritten for Flask.
+# This file is now much simpler. It only has one endpoint.
 
-import uuid
-import threading
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify
+from ..logic.tasks import parse_file_and_get_results
 
-# The line below has been corrected. It now uses '..' to correctly
-# navigate up one directory level from 'api/' to 'app/' before
-# looking for the 'logic/' directory.
-from ..logic.tasks import run_parsing_job, set_task, get_task
-
-# In Flask, we use a 'Blueprint' instead of an 'APIRouter'.
-# The first argument, 'api', is the name of the blueprint.
-# The second, __name__, is standard practice.
-# The url_prefix will make all routes in this file start with '/api'.
-api_blueprint = Blueprint('api', __name__, url_prefix='/api')
-
-
-def start_background_task(app, file_content, filename, task_id):
-    """
-    Helper function to run the parsing job in a background thread.
-    This is the Flask equivalent of FastAPI's BackgroundTasks.
-    """
-
-    def run_job():
-        # The background thread needs the application context to work correctly
-        with app.app_context():
-            run_parsing_job(file_content, filename, task_id)
-
-    thread = threading.Thread(target=run_job)
-    thread.daemon = True
-    thread.start()
+# We no longer have a url_prefix, the endpoint will be directly at /parse
+api_blueprint = Blueprint('api', __name__)
 
 
 @api_blueprint.route("/parse", methods=['POST'])
-def create_parsing_task():
-    """ The /parse endpoint, rewritten for Flask. """
+def parse_endpoint():
+    """
+    This single endpoint receives a file, calls the synchronous parsing function,
+    and returns the complete result in the response.
+    The /status endpoint is no longer needed.
+    """
     if 'file' not in request.files:
         return jsonify({"error": "No file part"}), 400
 
@@ -44,28 +23,16 @@ def create_parsing_task():
         return jsonify({"error": "No selected file"}), 400
 
     if file:
-        task_id = str(uuid.uuid4())
         file_content = file.read()
         filename = file.filename
 
-        initial_task_data = {
-            "task_id": task_id, "status": "pending", "progress": 0.0,
-            "stage": "Queued", "result": None
-        }
-        set_task(task_id, initial_task_data)
+        # This is now a direct, blocking call. The request will wait here
+        # until the parsing is finished.
+        result_data = parse_file_and_get_results(file_content, filename)
 
-        # We start the background task, passing it the current Flask app context
-        start_background_task(current_app._get_current_object(), file_content, filename, task_id)
+        if "error" in result_data:
+            return jsonify(result_data), 500
 
-        response_data = {"task_id": task_id, "status": "pending", "message": "Parsing task has been queued."}
-        return jsonify(response_data), 202
+        # Return the final, complete JSON data.
+        return jsonify(result_data), 200
 
-
-@api_blueprint.route("/status/<task_id>", methods=['GET'])
-def get_task_status(task_id: str):
-    """ The /status endpoint, rewritten for Flask. """
-    task = get_task(task_id)
-    if not task:
-        return jsonify({"detail": "Task not found"}), 404
-    # We can directly return the task dictionary; Flask will jsonify it.
-    return jsonify(task)
