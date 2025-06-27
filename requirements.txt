@@ -2,5 +2,5 @@ fastapi
 flask
 python-multipart
 gunicorn
-redis
+psycopg2
 selectolax==0.3.21

@@ -9,6 +9,5 @@ class Settings:
         "https://apparent-nadeen-aupp-54d2fac0.koyeb.app",
         "https://spnnnnn.pythonanywhere.com"  # Your PythonAnywhere domain
     ]
-    # REDIS_URL is not used by your current code, so we can ignore it.
 
 settings = Settings()
